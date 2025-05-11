@@ -20,10 +20,10 @@ def onReceive(packet, interface):  # called when a packet arrives
     relay_node = packet.get('relayNode', 0)
     
     if hop_start == hop_limit:
-        print(f"Packet received directly from {pFrom:x} (relayNode: {relay_node:x})")
+        print(f"Packet received directly from {pFrom:x} to {pTo:x} (relayNode: {relay_node:x})")
         relay_info = "direct"
     else:
-        print(f"Packet relayed, from {pFrom:x}, relayNode: {relay_node} (0x{relay_node:x})")
+        print(f"Packet relayed, from {pFrom:x} to {pTo:x}, relayNode: {relay_node} (0x{relay_node:x})")
         relay_info = f"relayed via {relay_node:x}"
 
     if pTo == interface.myInfo.my_node_num:
