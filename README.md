@@ -2,6 +2,12 @@ This is python bot for meshtastic. Used to measure signal strength.
 
 Start this on your home node.
 
+```
+chmod +x mesh-replier.py
+./mesh-replier.py
+```
+
+
 Then send 'ping' message from another node to your node.
 
 If your node hears it, it replies
