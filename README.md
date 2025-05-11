@@ -30,6 +30,8 @@ Connected to radio. My node ID: 1129887680 (0x4358b7c0)
 Waiting for messages
 ```
 
+and then you should se messages received from radio. There are messages, telemetry, position reports. They are visible on screen as they arrives. Same data is also logged into /tmp/mesh-replier.log
+
 ## Usage
 
 Then send 'ping' message from another node to your node.
