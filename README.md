@@ -6,7 +6,7 @@ This is python bot for meshtastic. Used to measure signal strength.
 
 Python depencies
 ````
-pip install termcolor meshtatic pyserial
+pip install meshtatic pyserial
 ````
 
 Start this on your home node.
