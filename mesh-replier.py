@@ -5,6 +5,9 @@ import meshtastic.serial_interface
 from pubsub import pub
 import datetime
 import binascii
+import logging
+import sys
+from logging.handlers import RotatingFileHandler
 
 # Precision bits to uncertainty mapping
 PRECISION_BITS_MAP = {
@@ -20,6 +23,32 @@ PRECISION_BITS_MAP = {
     19: {"metric": "45 m", "imperial": "148 feet"}
 }
 
+# Configure logging
+logger = logging.getLogger('MeshReplier')
+logger.setLevel(logging.INFO)
+
+# Remove existing handlers to prevent duplication
+logger.handlers = []
+
+# Console handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(console_handler)
+
+# File handler for /tmp/mesh-replier.log
+file_handler = RotatingFileHandler('/tmp/mesh-replier.log', maxBytes=10*1024*1024, backupCount=5)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.addHandler(file_handler)
+
+# Disable propagation to prevent Meshtastic's logger from duplicating output
+logger.propagate = False
+
+# Configure Meshtastic's logger to avoid console output
+meshtastic_logger = logging.getLogger('meshtastic')
+meshtastic_logger.handlers = []  # Remove any existing handlers
+meshtastic_logger.propagate = False  # Prevent propagation to root logger
+meshtastic_logger.addHandler(logging.NullHandler())  # Suppress output
+
 def get_node_names(interface, node_id):
     """Retrieve longName and shortName from NodeDB for a given node ID (integer)."""
     node = interface.nodes.get(f"!{node_id:08x}", None)
@@ -33,13 +62,17 @@ def get_node_names(interface, node_id):
 def onReceive(packet, interface):  # called when a packet arrives
     now = datetime.datetime.now()
     timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
-    #print(f"{timestamp} received: {packet}")
+    #logger.info(f"{timestamp} received: {packet}")
    
     pFrom = packet['from']
     pTo = packet['to']
     
     # Get node names
-    from_long_name, from_short_name = get_node_names(interface, pFrom)
+    try:
+        from_long_name, from_short_name = get_node_names(interface, pFrom)
+    except Exception as e:
+        logger.error(f"Error getting node names for {pFrom:x}: {e}")
+        from_long_name, from_short_name = f"Unknown_{pFrom:x}", f"UNK_{pFrom:x}"
     
     # Check if packet was received directly or relayed
     hop_start = packet.get('hopStart', 0)
@@ -52,10 +85,10 @@ def onReceive(packet, interface):  # called when a packet arrives
         signal_info = f", SNR: {packet['rxSnr']} dB, RSSI: {packet['rxRssi']} dBm"
     
     if hop_start == hop_limit and pFrom != interface.myInfo.my_node_num:
-        print(f"{timestamp} Direct packet received. From {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x}, relayNode: {relay_node} (0x{relay_node:x}){signal_info}")
+        logger.info(f"{timestamp} Direct packet received. From {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x}, relayNode: {relay_node} (0x{relay_node:x}){signal_info}")
         relay_info = "direct"
     else:
-        print(f"{timestamp} Relayed packet received. From {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x}, relayNode: {relay_node} (0x{relay_node:x}){signal_info}")
+        logger.info(f"{timestamp} Relayed packet received. From {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x}, relayNode: {relay_node} (0x{relay_node:x}){signal_info}")
         relay_info = f"relayed via {relay_node:x}"
 
     # Handle telemetry packets
@@ -66,39 +99,39 @@ def onReceive(packet, interface):  # called when a packet arrives
         # Handle deviceMetrics (battery, voltage, etc.)
         device_metrics = telemetry.get('deviceMetrics', {})
         if device_metrics:
-            print(f"Telemetry (Device Metrics) from {pFrom:x} ({from_long_name}/{from_short_name}):")
-            print(f"  Battery Level: {device_metrics.get('batteryLevel', 'N/A')} %")
-            print(f"  Voltage: {device_metrics.get('voltage', 'N/A')} V")
+            logger.info(f"Telemetry (Device Metrics) from {pFrom:x} ({from_long_name}/{from_short_name}):")
+            logger.info(f"  Battery Level: {device_metrics.get('batteryLevel', 'N/A')} %")
+            logger.info(f"  Voltage: {device_metrics.get('voltage', 'N/A')} V")
             channel_util = device_metrics.get('channelUtilization', 'N/A')
             air_util = device_metrics.get('airUtilTx', 'N/A')
-            print(f"  Channel Utilization: {channel_util:.2f} %" if isinstance(channel_util, (int, float)) else f"  Channel Utilization: {channel_util} %")
-            print(f"  Air Utilization TX: {air_util:.2f} %" if isinstance(air_util, (int, float)) else f"  Air Utilization TX: {air_util} %")
+            logger.info(f"  Channel Utilization: {channel_util:.2f} %" if isinstance(channel_util, (int, float)) else f"  Channel Utilization: {channel_util} %")
+            logger.info(f"  Air Utilization TX: {air_util:.2f} %" if isinstance(air_util, (int, float)) else f"  Air Utilization TX: {air_util} %")
             uptime_seconds = device_metrics.get('uptimeSeconds', 'N/A')
             uptime_hours = uptime_seconds / 3600 if isinstance(uptime_seconds, (int, float)) else 'N/A'
-            print(f"  Uptime: {uptime_seconds} seconds ({uptime_hours:.2f} hours)" if isinstance(uptime_seconds, (int, float)) else f"  Uptime: {uptime_seconds}")
+            logger.info(f"  Uptime: {uptime_seconds} seconds ({uptime_hours:.2f} hours)" if isinstance(uptime_seconds, (int, float)) else f"  Uptime: {uptime_seconds}")
         
         # Handle localStats (network statistics)
         local_stats = telemetry.get('localStats', {})
         if local_stats:
-            print(f"Telemetry (Local Stats) from {pFrom:x} ({from_long_name}/{from_short_name}):")
+            logger.info(f"Telemetry (Local Stats) from {pFrom:x} ({from_long_name}/{from_short_name}):")
             uptime_seconds = local_stats.get('uptimeSeconds', 'N/A')
             uptime_hours = uptime_seconds / 3600 if isinstance(uptime_seconds, (int, float)) else 'N/A'
-            print(f"  Uptime: {uptime_seconds} seconds ({uptime_hours:.2f} hours)" if isinstance(uptime_seconds, (int, float)) else f"  Uptime: {uptime_seconds}")
+            logger.info(f"  Uptime: {uptime_seconds} seconds ({uptime_hours:.2f} hours)" if isinstance(uptime_seconds, (int, float)) else f"  Uptime: {uptime_seconds}")
             channel_util = local_stats.get('channelUtilization', 'N/A')
             air_util = local_stats.get('airUtilTx', 'N/A')
-            print(f"  Channel Utilization: {channel_util:.2f} %" if isinstance(channel_util, (int, float)) else f"  Channel Utilization: {channel_util} %")
-            print(f"  Air Utilization TX: {air_util:.2f} %" if isinstance(air_util, (int, float)) else f"  Air Utilization TX: {air_util} %")
-            print(f"  Packets TX: {local_stats.get('numPacketsTx', 'N/A')}")
-            print(f"  Packets RX: {local_stats.get('numPacketsRx', 'N/A')}")
-            print(f"  Packets RX Bad: {local_stats.get('numPacketsRxBad', 'N/A')}")
-            print(f"  Online Nodes: {local_stats.get('numOnlineNodes', 'N/A')}")
-            print(f"  Total Nodes: {local_stats.get('numTotalNodes', 'N/A')}")
-            print(f"  RX Duplicates: {local_stats.get('numRxDupe', 'N/A')}")
-            print(f"  TX Relay: {local_stats.get('numTxRelay', 'N/A')}")
-            print(f"  TX Relay Canceled: {local_stats.get('numTxRelayCanceled', 'N/A')}")
+            logger.info(f"  Channel Utilization: {channel_util:.2f} %" if isinstance(channel_util, (int, float)) else f"  Channel Utilization: {channel_util} %")
+            logger.info(f"  Air Utilization TX: {air_util:.2f} %" if isinstance(air_util, (int, float)) else f"  Air Utilization TX: {air_util} %")
+            logger.info(f"  Packets TX: {local_stats.get('numPacketsTx', 'N/A')}")
+            logger.info(f"  Packets RX: {local_stats.get('numPacketsRx', 'N/A')}")
+            logger.info(f"  Packets RX Bad: {local_stats.get('numPacketsRxBad', 'N/A')}")
+            logger.info(f"  Online Nodes: {local_stats.get('numOnlineNodes', 'N/A')}")
+            logger.info(f"  Total Nodes: {local_stats.get('numTotalNodes', 'N/A')}")
+            logger.info(f"  RX Duplicates: {local_stats.get('numRxDupe', 'N/A')}")
+            logger.info(f"  TX Relay: {local_stats.get('numTxRelay', 'N/A')}")
+            logger.info(f"  TX Relay Canceled: {local_stats.get('numTxRelayCanceled', 'N/A')}")
         
         if not device_metrics and not local_stats:
-            print(f"Telemetry from {pFrom:x} ({from_long_name}/{from_short_name}): No device metrics or local stats available")
+            logger.info(f"Telemetry from {pFrom:x} ({from_long_name}/{from_short_name}): No device metrics or local stats available")
         return  # Skip further processing for telemetry packets
 
     # Handle position packets
@@ -119,45 +152,48 @@ def onReceive(packet, interface):  # called when a packet arrives
         precision_info = PRECISION_BITS_MAP.get(precision_bits, {"metric": "N/A", "imperial": "N/A"}) if isinstance(precision_bits, int) else {"metric": "N/A", "imperial": "N/A"}
         precision_text = f"±{precision_info['metric']} (±{precision_info['imperial']}) for {precision_bits} bits" if precision_info['metric'] != "N/A" else "N/A"
         
-        print(f"Position report from {pFrom:x} ({from_long_name}/{from_short_name}):")
-        print(f"  Latitude: {latitude} degrees" if isinstance(latitude, (int, float)) else f"  Latitude: {latitude}")
-        print(f"  Longitude: {longitude} degrees" if isinstance(longitude, (int, float)) else f"  Longitude: {longitude}")
-        print(f"  Altitude: {altitude} meters" if isinstance(altitude, (int, float)) else f"  Altitude: {altitude}")
-        print(f"  Time: {time_formatted}")
-        print(f"  Ground Speed: {ground_speed} m/s" if isinstance(ground_speed, (int, float)) else f"  Ground Speed: {ground_speed}")
-        print(f"  Ground Track: {ground_track:.2f} degrees" if isinstance(ground_track, (int, float)) else f"  Ground Track: {ground_track}")
-        print(f"  Satellites in View: {sats_in_view}")
-        print(f"  PDOP: {pdop:.2f}" if isinstance(pdop, (int, float)) else f"  PDOP: {pdop}")
-        print(f"  Precision: {precision_text}")
-        print(f"  Location Source: {location_source}")
+        logger.info(f"Position report from {pFrom:x} ({from_long_name}/{from_short_name}):")
+        logger.info(f"  Latitude: {latitude} degrees" if isinstance(latitude, (int, float)) else f"  Latitude: {latitude}")
+        logger.info(f"  Longitude: {longitude} degrees" if isinstance(longitude, (int, float)) else f"  Longitude: {longitude}")
+        logger.info(f"  Altitude: {altitude} meters" if isinstance(altitude, (int, float)) else f"  Altitude: {altitude}")
+        logger.info(f"  Time: {time_formatted}")
+        logger.info(f"  Ground Speed: {ground_speed} m/s" if isinstance(ground_speed, (int, float)) else f"  Ground Speed: {ground_speed}")
+        logger.info(f"  Ground Track: {ground_track:.2f} degrees" if isinstance(ground_track, (int, float)) else f"  Ground Track: {ground_track}")
+        logger.info(f"  Satellites in View: {sats_in_view}")
+        logger.info(f"  PDOP: {pdop:.2f}" if isinstance(pdop, (int, float)) else f"  PDOP: {pdop}")
+        logger.info(f"  Precision: {precision_text}")
+        logger.info(f"  Location Source: {location_source}")
         return  # Skip further processing for position packets
 
     # Handle all text message packets
     if portnum == 'TEXT_MESSAGE_APP':
         text = packet['decoded'].get('text', '')
         channel = packet.get('channel', 'N/A')
-        print(f"Text message from {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x} on channel {channel}: {text}")
+        logger.info(f"Text message from {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x} on channel {channel}: {text}")
 
     # Handle text message packets addressed to this node
     if pTo == interface.myInfo.my_node_num:
-        print(f"Packet is for me! It's from {pFrom:x} ({from_long_name}/{from_short_name})")
+        logger.info(f"Packet is for me! It's from {pFrom:x} ({from_long_name}/{from_short_name})")
         # Decode payload and check portnum
         payload = packet['decoded'].get('payload', b'')
-        print(f"Portnum: {portnum}, Payload (hex): {binascii.hexlify(payload).decode()}")
+        logger.info(f"Portnum: {portnum}, Payload (hex): {binascii.hexlify(payload).decode()}")
         
         # Check for ping (case-sensitive by default)
         if portnum == 'TEXT_MESSAGE_APP' and payload == b'ping':  # Use b'ping' for byte string comparison
             # Format timestamp to show only seconds
             timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
             msg = f"pong {timestamp}. rxSNR {packet['rxSnr']} dB RSSI {packet['rxRssi']} dBm ({relay_info})"
-            print(f"It's a ping packet. Replying with {msg}")
-            interface.sendText(msg, destinationId=pFrom, wantAck=True, wantResponse=False)
+            logger.info(f"It's a ping packet. Replying with {msg}")
+            try:
+                interface.sendText(msg, destinationId=pFrom, wantAck=True, wantResponse=False)
+            except Exception as e:
+                logger.error(f"Failed to send pong: {e}")
         else:
-            print(f"Packet is not ping packet, payload: {packet['decoded']['text'] if portnum == 'TEXT_MESSAGE_APP' else payload}, ignoring")
+            logger.info(f"Packet is not ping packet, payload: {packet['decoded']['text'] if portnum == 'TEXT_MESSAGE_APP' else payload}, ignoring")
 
 def onConnection(interface, topic=pub.AUTO_TOPIC):  # called when connection is established
-    print(f"Connected to radio. My node ID: {interface.myInfo.my_node_num} (0x{interface.myInfo.my_node_num:x})")
-    print("Waiting for messages")
+    logger.info(f"Connected to radio. My node ID: {interface.myInfo.my_node_num} (0x{interface.myInfo.my_node_num:x})")
+    logger.info("Waiting for messages")
 
 # Subscribe to connection and receive events
 pub.subscribe(onReceive, "meshtastic.receive")
@@ -167,12 +203,12 @@ pub.subscribe(onConnection, "meshtastic.connection.established")
 try:
     interface = meshtastic.serial_interface.SerialInterface(devPath='/dev/ttyUSB0')
 except Exception as e:
-    print(f"Failed to connect to radio: {e}")
+    logger.error(f"Failed to connect to radio: {e}")
     exit(1)
 
 try:
     while True:
         time.sleep(1)  # Keep the script running with a shorter sleep
 except KeyboardInterrupt:
-    print("Shutting down...")
+    logger.info("Shutting down...")
     interface.close()  # Close the interface only on exit
