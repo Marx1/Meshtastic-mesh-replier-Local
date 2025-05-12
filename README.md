@@ -1,4 +1,4 @@
-This is python bot for meshtastic. Used to measure signal strength using ping and send messages.
+This is python bot for meshtastic. Used to measure signal strength using ping, show telemetry and position data from nodes and send messages to channels/nodes.
 
 ![Usage example](https://raw.githubusercontent.com/OH1KK/Meshtastic-mesh-replier/refs/heads/main/mesh_replier.jpg)
 
