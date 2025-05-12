@@ -46,7 +46,6 @@ and if packet is relayed through another node then you see reply like
 
 ```
 pong 2025-05-11 15:07:53. rxSNR 6.5 dB RSSI -30 dBm (relayed via 24)
-
 ```
 
 ### Sending messages
@@ -65,5 +64,4 @@ Sending message to single node
 curl "http://192.168.1.123:8080/?dest=ea0a0b88&sendtext=Testing%201234"
 ```
 
-
-
+This assumes that your raspi has ip address 192.168.1.123.
