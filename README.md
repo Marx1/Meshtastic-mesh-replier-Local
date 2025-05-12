@@ -48,3 +48,22 @@ and if packet is relayed through another node then you see reply like
 pong 2025-05-11 15:07:53. rxSNR 6.5 dB RSSI -30 dBm (relayed via 24)
 
 ```
+
+### Sending messages
+
+mesh-replier.py sets http listener to port 8080 and listens for message requests.
+
+Sending message to channel
+
+```
+curl "http://192.168.1.123:8080/?ch_index=0&sendtext=Testing%201234"
+```
+
+Sending message to single node
+
+```
+curl "http://wg-meshtastic2.intra.vy.fi:8080/?dest=ea0a0b88&sendtext=Testing%201234"
+```
+
+
+
