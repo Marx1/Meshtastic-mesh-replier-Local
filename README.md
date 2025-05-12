@@ -62,7 +62,7 @@ curl "http://192.168.1.123:8080/?ch_index=0&sendtext=Testing%201234"
 Sending message to single node
 
 ```
-curl "http://wg-meshtastic2.intra.vy.fi:8080/?dest=ea0a0b88&sendtext=Testing%201234"
+curl "http://192.168.1.123:8080/?dest=ea0a0b88&sendtext=Testing%201234"
 ```
 
 
