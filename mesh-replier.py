@@ -8,6 +8,13 @@ import binascii
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingTCPServer
+import threading
+import urllib.parse
+import socket
+import os
+import errno
 
 # Precision bits to uncertainty mapping
 PRECISION_BITS_MAP = {
@@ -48,6 +55,136 @@ meshtastic_logger = logging.getLogger('meshtastic')
 meshtastic_logger.handlers = []  # Remove any existing handlers
 meshtastic_logger.propagate = False  # Prevent propagation to root logger
 meshtastic_logger.addHandler(logging.NullHandler())  # Suppress output
+
+# Global Meshtastic interface (to be initialized later)
+interface = None
+
+class CustomThreadingTCPServer(ThreadingTCPServer):
+    """Custom ThreadingTCPServer for IPv6 binding."""
+    def __init__(self, server_address, RequestHandlerClass):
+        self.address_family = socket.AF_INET6
+        try:
+            # Initialize parent class first
+            super().__init__(server_address, RequestHandlerClass)
+            self.socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            logger.info(f"Binding to {server_address}")
+            self.socket.bind(server_address)
+            self.socket.listen(5)
+            logger.info(f"Successfully bound to {server_address}")
+        except socket.gaierror as e:
+            logger.error(f"Socket binding failed (gaierror): {e}")
+            self.socket.close()
+            raise
+        except socket.error as e:
+            logger.error(f"Socket error during setup: {e}")
+            self.socket.close()
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error during socket setup: {e}")
+            self.socket.close()
+            raise
+
+    def server_close(self):
+        """Ensure socket is properly closed."""
+        try:
+            self.socket.close()
+            logger.info("Server socket closed")
+        except Exception as e:
+            logger.error(f"Error closing server socket: {e}")
+
+def run_http_server():
+    """Run the HTTP server on port 8080 with IPv6 support."""
+    port = 8080
+    server_address = ('::', port)
+    
+    # Log network configuration for debugging
+    try:
+        logger.info("Network interfaces:")
+        for line in os.popen("ip addr").readlines():
+            logger.info(line.strip())
+        logger.info("IPv6 status:")
+        for line in os.popen("sysctl net.ipv6.conf.all.disable_ipv6 net.ipv6.bindv6only").readlines():
+            logger.info(line.strip())
+        logger.info("Port 8080 status:")
+        for line in os.popen("netstat -tulnp | grep 8080").readlines():
+            logger.info(line.strip())
+    except Exception as e:
+        logger.error(f"Failed to log network configuration: {e}")
+
+    # Attempt to bind to :: on port 8080
+    try:
+        httpd = CustomThreadingTCPServer(server_address, MeshHTTPRequestHandler)
+        logger.info(f"Starting HTTP server on {server_address[0]}:{port} (IPv6)")
+        httpd.serve_forever()
+    except socket.error as e:
+        if e.errno == errno.EADDRINUSE:
+            logger.error(f"Port {port} is already in use. Checking processes...")
+            os.system("netstat -tulnp | grep 8080")
+            logger.error("Please free port 8080 or choose a different port.")
+        logger.error(f"Failed to bind to {server_address[0]}:{port}: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Failed to start HTTP server: {e}")
+        sys.exit(1)
+
+class MeshHTTPRequestHandler(BaseHTTPRequestHandler):
+    """Handle HTTP GET requests to send Meshtastic messages."""
+    def do_GET(self):
+        global interface
+        try:
+            # Parse the URL and query parameters
+            parsed_url = urllib.parse.urlparse(self.path)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+
+            # Extract ch_index, dest, and sendtext
+            ch_index = query_params.get('ch_index', [None])[0]
+            dest = query_params.get('dest', [None])[0]
+            sendtext = query_params.get('sendtext', [''])[0]
+
+            logger.info(f"Received HTTP request: path={self.path}, ch_index={ch_index}, dest={dest}, sendtext={sendtext}")
+
+            # Validate request
+            if not interface:
+                logger.error("Meshtastic interface not initialized")
+                self.send_error(500, "Meshtastic interface not initialized")
+                return
+            if not sendtext:
+                logger.error("No sendtext provided")
+                self.send_error(400, "Missing sendtext parameter")
+                return
+            if not (ch_index or dest):
+                logger.error("Neither ch_index nor dest provided")
+                self.send_error(400, "Must provide ch_index or dest")
+                return
+
+            # Send Meshtastic message
+            try:
+                if ch_index:
+                    ch_index = int(ch_index)  # Convert to integer
+                    interface.sendText(sendtext, channelIndex=ch_index, wantAck=True)
+                    logger.info(f"Sent message to channel {ch_index}: {sendtext}")
+                else:
+                    # Convert dest hex string to integer
+                    dest_id = int(dest, 16)
+                    interface.sendText(sendtext, destinationId=dest_id, wantAck=True)
+                    logger.info(f"Sent message to node {dest}: {sendtext}")
+
+                # Send HTTP response
+                self.send_response(200)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(b"Message sent successfully")
+            except ValueError as e:
+                logger.error(f"Invalid ch_index or dest: {e}")
+                self.send_error(400, f"Invalid ch_index or dest: {e}")
+            except Exception as e:
+                logger.error(f"Failed to send Meshtastic message: {e}")
+                self.send_error(500, f"Failed to send message: {e}")
+
+        except Exception as e:
+            logger.error(f"Error processing HTTP request: {e}")
+            self.send_error(500, f"Internal server error: {e}")
 
 def get_node_names(interface, node_id):
     """Retrieve longName and shortName from NodeDB for a given node ID (integer)."""
@@ -204,11 +341,16 @@ try:
     interface = meshtastic.serial_interface.SerialInterface(devPath='/dev/ttyUSB0')
 except Exception as e:
     logger.error(f"Failed to connect to radio: {e}")
-    exit(1)
+    sys.exit(1)
+
+# Start HTTP server in a separate thread
+http_thread = threading.Thread(target=run_http_server, daemon=True)
+http_thread.start()
 
 try:
     while True:
-        time.sleep(1)  # Keep the script running with a shorter sleep
+        time.sleep(1)  # Keep the main thread running for Meshtastic events
 except KeyboardInterrupt:
     logger.info("Shutting down...")
-    interface.close()  # Close the interface only on exit
+    interface.close()  # Close the Meshtastic interface
+    sys.exit(0)
