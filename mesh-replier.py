@@ -1,4 +1,8 @@
 #!/usr/bin/python3
+
+#Hevily modified version https://github.com/OH1KK/Meshtastic-mesh-replier/
+#Modified by KG6MDW https://github.com/Marx1/Meshtastic-mesh-replier-Local/
+
 import time
 import meshtastic
 import meshtastic.serial_interface
@@ -30,6 +34,18 @@ PRECISION_BITS_MAP = {
     19: {"metric": "45 m", "imperial": "148 feet"}
 }
 
+#Database (simple text file) of nodes we've messaged.
+nodelist = []
+open("messagednodes.txt", "a").close()
+with open("messagednodes.txt", "r") as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            try:
+                nodelist.append(int(line))
+            except ValueError:
+                pass  # skip lines that aren't valid integers
+
 # Configure logging
 logger = logging.getLogger('MeshReplier')
 logger.setLevel(logging.INFO)
@@ -58,7 +74,7 @@ meshtastic_logger.addHandler(logging.NullHandler())  # Suppress output
 
 # Global Meshtastic interface (to be initialized later)
 interface = None
-
+'''
 class CustomThreadingTCPServer(ThreadingTCPServer):
     """Custom ThreadingTCPServer for IPv6 binding."""
     def __init__(self, server_address, RequestHandlerClass):
@@ -185,7 +201,7 @@ class MeshHTTPRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             logger.error(f"Error processing HTTP request: {e}")
             self.send_error(500, f"Internal server error: {e}")
-
+'''
 def get_node_names(interface, node_id):
     """Retrieve longName and shortName from NodeDB for a given node ID (integer)."""
     node = interface.nodes.get(f"!{node_id:08x}", None)
@@ -197,6 +213,7 @@ def get_node_names(interface, node_id):
     return f"Meshtastic {hex_id}", hex_id
 
 def onReceive(packet, interface):  # called when a packet arrives
+    global nodelist
     now = datetime.datetime.now()
     timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
     #logger.info(f"{timestamp} received: {packet}")
@@ -225,11 +242,13 @@ def onReceive(packet, interface):  # called when a packet arrives
         logger.info(f"{timestamp} Direct packet received. From {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x}, relayNode: {relay_node} (0x{relay_node:x}){signal_info}")
         relay_info = "direct"
     else:
-        logger.info(f"{timestamp} Relayed packet received. From {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x}, relayNode: {relay_node} (0x{relay_node:x}){signal_info}")
+        #logger.info(f"{timestamp} Relayed packet received. From {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x}, relayNode: {relay_node} (0x{relay_node:x}){signal_info}")
         relay_info = f"relayed via {relay_node:x}"
 
     # Handle telemetry packets
     portnum = packet['decoded'].get('portnum', 'UNKNOWN')
+
+    '''
     if portnum == 'TELEMETRY_APP':
         telemetry = packet['decoded'].get('telemetry', {})
         
@@ -301,13 +320,66 @@ def onReceive(packet, interface):  # called when a packet arrives
         logger.info(f"  Precision: {precision_text}")
         logger.info(f"  Location Source: {location_source}")
         return  # Skip further processing for position packets
-
+'''
     # Handle all text message packets
     if portnum == 'TEXT_MESSAGE_APP':
         text = packet['decoded'].get('text', '')
         channel = packet.get('channel', 'N/A')
+        
         logger.info(f"Text message from {pFrom:x} ({from_long_name}/{from_short_name}) to {pTo:x} on channel {channel}: {text}")
+        print(f"Relayinfo: {relay_info}")
 
+        if pTo == interface.myInfo.my_node_num:
+            print(text.strip().lower())
+            if text.strip().lower() == "ping":  # Use b'ping' for byte string comparison
+                # Format timestamp to show only seconds
+                timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
+                msg = f"pong {timestamp}. rxSNR {packet['rxSnr']} dB RSSI {packet['rxRssi']} dBm ({relay_info})"
+                logger.info(f"It's a ping packet. Replying with {msg}")
+                try:
+                    interface.sendText(msg, destinationId=pFrom, wantAck=True, wantResponse=True, channelIndex=0)
+                except Exception as e:
+                    logger.error(f"Failed to send pong: {e}")
+                
+            else:
+                # Format timestamp to show only seconds
+                timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
+                msg = "I'm just a bot. If you need assitance contact Trevor KG6MDW on the BAYME.sh discord."
+                logger.info(f"It's a some other message. Replying with canned responce")
+                try:
+                    interface.sendText(msg, destinationId=pFrom, wantAck=True, wantResponse=True, channelIndex=0)
+
+                except Exception as e:
+                    logger.error(f"Failed to send automessage: {e}")
+
+        else:    
+        # Do a responce if the node is not in the local DB.
+            if pFrom not in nodelist and relay_info == "direct" : 
+                #add it to the list
+                nodelist.append(pFrom)
+                with open("messagednodes.txt", "w") as f:
+                    for node_id in nodelist:
+                        f.write(f"{node_id}\n")
+
+                logger.info(f"We heard a packet from a node not in our database. Replying with with automated message")
+                msg = f"Hello, It looks like your at Pacificon. I saw a packet from you directly. We are using a special event settings at Pacificon, You can get them here: https://www.pacificon.org/events/meshtastic"
+                try:
+                    interface.sendText(msg, destinationId=pFrom, wantAck=True, wantResponse=True, channelIndex=0)
+
+                except Exception as e:
+                    logger.info(f"Failed to send message: {e}")
+
+                msg = f"The rest of the SF Bay area uses Medium Slow. IF you would like to join our mesh after Pacificon, check us out at https://bayme.sh "
+                try:
+                    interface.sendText(msg, destinationId=pFrom, wantAck=True, wantResponse=True, channelIndex=0)
+
+                except Exception as e:
+                    logger.error(f"Failed to send message: {e}")
+            else:
+                logger.info(f"Not a 0-hop message or node already in database. Ignoring")
+
+       
+'''
     # Handle text message packets addressed to this node
     if pTo == interface.myInfo.my_node_num:
         logger.info(f"Packet is for me! It's from {pFrom:x} ({from_long_name}/{from_short_name})")
@@ -322,12 +394,15 @@ def onReceive(packet, interface):  # called when a packet arrives
             msg = f"pong {timestamp}. rxSNR {packet['rxSnr']} dB RSSI {packet['rxRssi']} dBm ({relay_info})"
             logger.info(f"It's a ping packet. Replying with {msg}")
             try:
-                interface.sendText(msg, destinationId=pFrom, wantAck=True, wantResponse=False)
+                result = interface.sendText(msg, destinationId=pFrom, wantAck=True, wantResponse=True, channelIndex=0)
+                logger.info (result)
             except Exception as e:
                 logger.error(f"Failed to send pong: {e}")
         else:
-            logger.info(f"Packet is not ping packet, payload: {packet['decoded']['text'] if portnum == 'TEXT_MESSAGE_APP' else payload}, ignoring")
-
+            # Format timestamp to show only seconds
+            timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
+            logger.info(f"Packet is not direct message, payload: {packet['decoded']['text'] if portnum == 'TEXT_MESSAGE_APP' else payload}, ignoring")
+'''
 def onConnection(interface, topic=pub.AUTO_TOPIC):  # called when connection is established
     logger.info(f"Connected to radio. My node ID: {interface.myInfo.my_node_num} (0x{interface.myInfo.my_node_num:x})")
     logger.info("Waiting for messages")
@@ -344,8 +419,8 @@ except Exception as e:
     sys.exit(1)
 
 # Start HTTP server in a separate thread
-http_thread = threading.Thread(target=run_http_server, daemon=True)
-http_thread.start()
+#http_thread = threading.Thread(target=run_http_server, daemon=True)
+#http_thread.start()
 
 try:
     while True:
